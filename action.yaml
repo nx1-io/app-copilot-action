@@ -1,0 +1,162 @@
+name: NX1 Action
+
+description: Deploy a NX1 application (see nx1.io)
+
+inputs:
+  operation:
+    description: prepare, assume-role, build-nixpacks, run or deploy.
+    required: true
+  app_id:
+    description: Your NX1 application ID.
+  api_url:
+    description: The NX1 API URL.
+    default: https://app.citadel.run/api
+  api_token:
+    description: Used to pull the required data from NX1 API.
+  env_id:
+    description: The NX1 environment ID.
+  service:
+    description: Service to be deployed. Required for deploy command only if job not passed.
+  job:
+    description: Job to be deployed. Required for deploy command only if service not passed.
+  command:
+    description: Command to be executed. Required for run operation only.
+    default: 'uname -a'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set environment variables from given inputs
+      run: |
+        if [[ -n "${{ inputs.app_id }}" ]]; then echo "NX1_APP_ID=${{ inputs.app_id }}" >> $GITHUB_ENV; fi
+        if [[ -n "${{ inputs.api_url }}" ]]; then echo "NX1_API_URL=${{ inputs.api_url }}" >> $GITHUB_ENV; fi
+        if [[ -n "${{ inputs.api_token }}" ]]; then echo "NX1_API_TOKEN=${{ inputs.api_token }}" >> $GITHUB_ENV; fi
+        if [[ -n "${{ inputs.env_id }}" ]]; then echo "NX1_ENV_ID=${{ inputs.env_id }}" >> $GITHUB_ENV; fi
+        if [[ -n "${{ inputs.service }}" ]]; then echo "NX1_SERVICE=${{ inputs.service }}" >> $GITHUB_ENV; fi
+        echo "NX1_BUILD_VERSION=${{ github.sha }}" >> $GITHUB_ENV
+      shell: bash
+
+    - uses: nx1-io/app-copilot-prepare-action@main
+      if: ${{ inputs.operation == 'prepare' }}
+      name: Prepare infrastructure code and set env vars
+      with:
+        app_id: ${{ inputs.app_id }}
+        api_url: ${{ inputs.api_url }}
+        api_token: ${{ inputs.api_token }}
+        env_id: ${{ inputs.env_id }}
+
+    - name: Set permissions for runner
+      if: ${{ inputs.operation == 'prepare' }}
+      run: |
+        sudo chown -R runner:runner ./copilot
+        sudo chmod -R 755 ./copilot
+      shell: bash
+
+    - uses: aws-actions/configure-aws-credentials@v4
+      if: ${{ inputs.operation == 'assume-role' }}
+      name: Configure AWS Credentials and assume role
+      with:
+        role-to-assume: ${{ env.NX1_SERVICE_ROLE_ARN }}
+        role-session-name: github-deploy
+        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+        role-duration-seconds: 3600
+
+    - name: Run nixpacks
+      if: ${{ inputs.operation == 'build-nixpacks' }}
+      run: |
+        export VERSION=1.20.0
+        curl -LO https://github.com/railwayapp/nixpacks/releases/download/v${VERSION}/nixpacks-v${VERSION}-amd64.deb
+        sudo dpkg -i nixpacks-v${VERSION}-amd64.deb
+        nixpacks build . -o .
+        eval $(nixpacks plan  . | jq -r '.variables | to_entries | .[] | "export " + .key + "=" + .value')
+        envsubst < .nixpacks/Dockerfile > .nixpacks/Dockerfile.envsubst && mv .nixpacks/Dockerfile.envsubst .nixpacks/Dockerfile
+        touch .nx1-feature-nixpacks
+      shell: bash
+
+    - name: Set FORCE_DEPLOY according to service type
+      if: ${{ inputs.operation == 'deploy' }}
+      run: |
+        # Convert the service name to uppercase and replace hyphens with underscores
+        SERVICE_UPPER=$(echo "${{ inputs.service }}" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+        ENV_VAR="NX1_TYPE_${SERVICE_UPPER}"
+    
+        if [[ "${!ENV_VAR}" != "STATIC_WEBSITE" ]]; then
+          FORCE_DEPLOY='true'
+        else
+          FORCE_DEPLOY='false'
+        fi
+        
+        echo "FORCE_DEPLOY=${FORCE_DEPLOY}" >> $GITHUB_ENV
+      shell: bash
+
+    - name: Deploy Application Service
+      if: ${{ inputs.operation == 'deploy' }}
+      env:
+        COPILOT_SERVICE_NAME: ${{ inputs.service }}
+        COPILOT_JOB_NAME: ${{ inputs.job }}
+      run: |
+        if [[ -z "${{ inputs.service }}" && -z "${{ inputs.job }}" ]]; then echo "Service name and job name are required for deploy operation"; exit 1; fi
+
+        echo "::group::Install Copilot (if not installed)"
+        if ! command -v copilot &> /dev/null; then
+          curl -Lo /usr/local/bin/copilot https://github.com/aws/copilot-cli/releases/download/v1.32.1/copilot-linux
+          chmod +x /usr/local/bin/copilot
+        fi
+        echo "::endgroup::"
+
+        echo "::group::App"
+        copilot app init
+        echo "::endgroup::"
+        
+        echo "::group::Environment"
+        if [[ $(copilot env ls) != *"$NX1_ENV"* ]];
+        then
+          copilot env init -n $NX1_ENV --default-config
+        fi
+        
+        copilot env deploy -n $NX1_ENV --diff-yes --force
+        echo "::endgroup::"
+        
+        echo "::group::Service"
+        if [[ "$COPILOT_JOB_NAME" != "" ]]; then
+          copilot job logs --env $NX1_ENV -n $COPILOT_JOB_NAME --limit 1 >> /dev/null || copilot job init -n $COPILOT_JOB_NAME
+        elif [[ "$COPILOT_SERVICE_NAME" != "" ]]; then
+          copilot svc show --manifest $NX1_ENV -n $COPILOT_SERVICE_NAME >> /dev/null || copilot svc init -n $COPILOT_SERVICE_NAME
+        else
+          echo "Service or Job name is required for deploy operation"; exit 1;
+        fi
+        echo "::endgroup::"
+        
+        echo "::group::Deploy"
+        if [[ "$COPILOT_JOB_NAME" != "" ]]; then
+          copilot job deploy --env $NX1_ENV --name $COPILOT_JOB_NAME --tag $NX1_BUILD_VERSION
+        elif [[ "$COPILOT_SERVICE_NAME" != "" ]]; then
+          if [[ "$FORCE_DEPLOY" == "true" ]]; then
+            copilot svc deploy --env $NX1_ENV --diff-yes --name $COPILOT_SERVICE_NAME --tag $NX1_BUILD_VERSION --force
+          else
+            copilot svc deploy --env $NX1_ENV --diff-yes --name $COPILOT_SERVICE_NAME --tag $NX1_BUILD_VERSION
+          fi
+        fi
+        echo "::endgroup::"
+
+      shell: bash
+
+    - name: Run command
+      if: ${{ inputs.operation == 'run' }}
+      env:
+        COPILOT_SERVICE_NAME: ${{ inputs.service }}
+      run: |
+        if [[ -z "${{ inputs.service }}" ]]; then echo "Service name is required for run operation"; exit 1; fi
+
+        echo "::group::Install Copilot (if not installed)"
+        if ! command -v copilot &> /dev/null; then
+          curl -Lo /usr/local/bin/copilot https://github.com/aws/copilot-cli/releases/download/v1.32.1/copilot-linux
+          chmod +x /usr/local/bin/copilot
+        fi
+        echo "::endgroup::"
+
+        echo "::group::running command: copilot svc exec -e $NX1_ENV --name $COPILOT_SERVICE_NAME --command '${{ inputs.command }}'"
+        copilot svc exec -e $NX1_ENV --name $COPILOT_SERVICE_NAME --command '${{ inputs.command }}'
+        echo "::endgroup::"
+
+      shell: bash
