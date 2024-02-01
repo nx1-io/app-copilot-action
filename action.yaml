@@ -36,7 +36,7 @@ runs:
         echo "NX1_BUILD_VERSION=${{ github.sha }}" >> $GITHUB_ENV
       shell: bash
 
-    - uses: nx1-io/dev-app-copilot-prepare-action@feature/app-addons-stashed
+    - uses: nx1-io/app-copilot-prepare-action@feature/app-addons-stashed
       if: ${{ inputs.operation == 'prepare' }}
       name: Prepare infrastructure code and set env vars
       with:
