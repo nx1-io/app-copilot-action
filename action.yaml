@@ -114,7 +114,7 @@ runs:
           copilot env init -n $NX1_ENV --default-config
         fi
         
-        copilot env deploy -n $NX1_ENV --diff-yes --force
+        copilot env deploy -n $NX1_ENV --diff-yes --force || echo "Environment update failed, proceeding to update service/job"
         echo "::endgroup::"
         
         echo "::group::Service"
