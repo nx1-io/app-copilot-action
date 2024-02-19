@@ -36,7 +36,7 @@ runs:
         echo "NX1_BUILD_VERSION=${{ github.sha }}" >> $GITHUB_ENV
       shell: bash
 
-    - uses: nx1-io/app-copilot-prepare-action@main
+    - uses: nx1-io/app-copilot-prepare-action@feature/app-addons-stashed
       if: ${{ inputs.operation == 'prepare' }}
       name: Prepare infrastructure code and set env vars
       with:
@@ -114,7 +114,7 @@ runs:
           copilot env init -n $NX1_ENV --default-config
         fi
         
-        copilot env deploy -n $NX1_ENV --diff-yes --force
+        copilot env deploy -n $NX1_ENV --diff-yes --force || export REDEPLOY_ENV=true
         echo "::endgroup::"
         
         echo "::group::Service"
@@ -137,7 +137,14 @@ runs:
             copilot svc deploy --env $NX1_ENV --diff-yes --name $COPILOT_SERVICE_NAME --tag $NX1_BUILD_VERSION
           fi
         fi
+
         echo "::endgroup::"
+
+        if [[ "$REDEPLOY_ENV" == "true" ]]; then
+          echo "::group::Environment (re-attempting deploy)"
+          copilot env deploy -n $NX1_ENV --diff-yes --force
+          echo "::endgroup::"
+        fi
 
       shell: bash
 
