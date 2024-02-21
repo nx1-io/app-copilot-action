@@ -91,6 +91,7 @@ runs:
 
     - name: Deploy Application Service
       if: ${{ inputs.operation == 'deploy' }}
+      id: deploy
       env:
         COPILOT_SERVICE_NAME: ${{ inputs.service }}
         COPILOT_JOB_NAME: ${{ inputs.job }}
@@ -146,6 +147,15 @@ runs:
           echo "::endgroup::"
         fi
 
+      shell: bash
+
+    - name: Deploy Application Service - Failed Logs
+      if: ${{ steps.deploy.outcome != 'success' }}
+      env:
+        COPILOT_SERVICE_NAME: ${{ inputs.service }}
+      run: |
+        echo "Deploy failed. Please check the logs for more details."
+        copilot svc logs -n $COPILOT_SERVICE_NAME --env $NX1_ENV --previous
       shell: bash
 
     - name: Run command
