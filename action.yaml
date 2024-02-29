@@ -22,6 +22,9 @@ inputs:
   command:
     description: Command to be executed. Required for run operation only.
     default: 'uname -a'
+  version:
+    description: Overrides the version of the prepare action.
+    default: 'v1'
 
 runs:
   using: "composite"
@@ -36,7 +39,7 @@ runs:
         echo "NX1_BUILD_VERSION=${{ github.sha }}" >> $GITHUB_ENV
       shell: bash
 
-    - uses: nx1-io/app-copilot-prepare-action@main
+    - uses: nx1-io/app-copilot-prepare-action@${{ inputs.version }}
       if: ${{ inputs.operation == 'prepare' }}
       name: Prepare infrastructure code and set env vars
       with:
